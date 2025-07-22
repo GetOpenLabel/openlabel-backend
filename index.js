@@ -7,6 +7,7 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
+// Lyrics generator
 app.post('/generate-lyrics', async (req, res) => {
   const { artistName, mood } = req.body;
 
@@ -24,7 +25,7 @@ app.post('/generate-lyrics', async (req, res) => {
       {
         headers: {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json' // ✅ this line is crucial
+          'Content-Type': 'application/json'
         },
       }
     );
@@ -37,6 +38,8 @@ app.post('/generate-lyrics', async (req, res) => {
     res.status(500).json({ error: 'Failed to generate lyrics' });
   }
 });
+
+// Cover art generator
 app.post('/generate-cover-art', async (req, res) => {
   const { prompt } = req.body;
 
@@ -62,6 +65,8 @@ app.post('/generate-cover-art', async (req, res) => {
   } catch (err) {
     console.error('Image generation error:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to generate cover art' });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
