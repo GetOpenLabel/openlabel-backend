@@ -24,6 +24,7 @@ app.post('/generate-lyrics', async (req, res) => {
       {
         headers: {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json' // ✅ this line is crucial
         },
       }
     );
@@ -32,7 +33,7 @@ app.post('/generate-lyrics', async (req, res) => {
     res.json({ lyrics });
 
   } catch (err) {
-    console.error(err);
+    console.error('OpenAI API error:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to generate lyrics' });
   }
 });
