@@ -37,6 +37,33 @@ app.post('/generate-lyrics', async (req, res) => {
     res.status(500).json({ error: 'Failed to generate lyrics' });
   }
 });
+app.post('/generate-cover-art', async (req, res) => {
+  const { prompt } = req.body;
+
+  try {
+    const response = await axios.post(
+      'https://api.openai.com/v1/images/generations',
+      {
+        prompt,
+        n: 1,
+        size: "1024x1024"
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const imageUrl = response.data.data[0].url;
+    res.json({ imageUrl });
+
+  } catch (err) {
+    console.error('Image generation error:', err.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to generate cover art' });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
