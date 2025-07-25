@@ -7,18 +7,26 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// Lyrics generator
+// Lyrics generator (NOW takes a single prompt!)
 app.post('/generate-lyrics', async (req, res) => {
-  const { artistName, mood } = req.body;
+  const { prompt } = req.body;
+
+  if (!prompt) {
+    return res.status(400).json({ error: "No prompt provided." });
+  }
 
   try {
-    const prompt = `Write song lyrics in the style of ${artistName}, about the mood: ${mood}.`;
+    // You can update the system prompt for more style if you want.
+    const openaiPrompt = `Write original song lyrics based on this prompt: ${prompt}`;
 
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
         model: 'gpt-3.5-turbo',
-        messages: [{ role: 'user', content: prompt }],
+        messages: [
+          { role: 'system', content: 'You are a songwriting assistant.' },
+          { role: 'user', content: openaiPrompt }
+        ],
         temperature: 0.8,
         max_tokens: 200,
       },
@@ -39,7 +47,7 @@ app.post('/generate-lyrics', async (req, res) => {
   }
 });
 
-// Cover art generator
+// Cover art generator (no changes!)
 app.post('/generate-cover-art', async (req, res) => {
   const { prompt } = req.body;
 
@@ -66,6 +74,10 @@ app.post('/generate-cover-art', async (req, res) => {
     console.error('Image generation error:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to generate cover art' });
   }
+});
+
+app.get('/', (req, res) => {
+  res.send('OpenLabel Backend is running!');
 });
 
 app.listen(PORT, () => {
