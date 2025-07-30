@@ -11,11 +11,11 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// --- Multer Setup ---
+// --- Multer Setup for File Uploads ---
 const storage = multer.memoryStorage();
-const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB
+const upload = multer({ storage: storage, limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB max
 
-// --- Cloudflare R2 Setup ---
+// --- R2 Setup ---
 const r2 = new S3Client({
   region: 'auto',
   endpoint: process.env.R2_ENDPOINT,
@@ -27,84 +27,23 @@ const r2 = new S3Client({
 
 // --- API Key Check ---
 if (!process.env.OPENAI_API_KEY) {
-  console.error('❌ OPENAI_API_KEY missing in .env!');
+  console.error('❌ OPENAI_API_KEY is missing in .env!');
   process.exit(1);
 }
 
 // --- Health Check ---
 app.get('/', (req, res) => {
-  res.send('✅ OpenLabel AI Backend is running!');
+  res.send('OpenLabel AI Backend is running!');
 });
 
-// --- Utility: Upload to R2 ---
-async function uploadToR2(buffer, mimeType, filename) {
-  const key = `${Date.now()}-${filename}`;
-  await r2.send(new PutObjectCommand({
-    Bucket: process.env.R2_BUCKET_NAME,
-    Key: key,
-    Body: buffer,
-    ContentType: mimeType,
-  }));
-  return `${process.env.R2_ENDPOINT}/${process.env.R2_BUCKET_NAME}/${encodeURIComponent(key)}`;
-}
-
-// --- Utility: Transcribe with Whisper ---
-async function transcribeAudio(buffer, filename) {
-  const tempFilePath = `./uploads/${Date.now()}-${filename}`;
-  fs.mkdirSync('./uploads', { recursive: true });
-  fs.writeFileSync(tempFilePath, buffer);
-
-  try {
-    const formData = new FormData();
-    formData.append('file', fs.createReadStream(tempFilePath));
-    formData.append('model', 'whisper-1');
-
-    const whisperRes = await axios.post(
-      'https://api.openai.com/v1/audio/transcriptions',
-      formData,
-      { headers: { ...formData.getHeaders(), Authorization: `Bearer ${process.env.OPENAI_API_KEY}` } }
-    );
-
-    return whisperRes.data.text || '';
-  } catch (err) {
-    console.error('Whisper Error:', err.response?.data || err.message);
-    return '';
-  } finally {
-    fs.unlinkSync(tempFilePath);
-  }
-}
-
-// --- Utility: Generate GPT Feedback ---
-async function generateFeedback(transcript, filename, mimeType) {
-  const feedbackPrompt = transcript?.length > 5
-    ? `You are an AI A&R specialist. Analyze these lyrics:\n\n${transcript}\n\nProvide structured feedback: genre, strengths, weaknesses, suggestions. Be encouraging.`
-    : `You are an AI A&R specialist. Could not extract lyrics from "${filename}" (${mimeType}). Provide general constructive feedback with genre, strengths, weaknesses, suggestions.`;
-
-  try {
-    const gptRes = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-3.5-turbo',
-        messages: [
-          { role: 'system', content: "You're an expert AI A&R reviewer." },
-          { role: 'user', content: feedbackPrompt }
-        ],
-        max_tokens: 400,
-        temperature: 0.8,
-      },
-      { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' } }
-    );
-    return gptRes.data.choices[0].message.content;
-  } catch (err) {
-    console.error('GPT Feedback Error:', err.response?.data || err.message);
-    return 'Could not analyze in detail, but your file was received successfully!';
-  }
-}
-
-// --- AI Songwriter ---
+// --- AI Songwriter Endpoint ---
 app.post('/generate-lyrics', async (req, res) => {
   const { prompt } = req.body;
-  if (!prompt) return res.status(400).json({ error: 'No prompt provided.' });
+  console.log('🟢 Songwriter Prompt Received:', prompt);
+
+  if (!prompt) {
+    return res.status(400).json({ error: 'No prompt provided for lyrics.' });
+  }
 
   try {
     const response = await axios.post(
@@ -112,69 +51,264 @@ app.post('/generate-lyrics', async (req, res) => {
       {
         model: 'gpt-3.5-turbo',
         messages: [
-          { role: 'system', content: 'You are a creative AI songwriter assistant.' },
+          {
+            role: 'system',
+            content: 'You are a creative AI songwriter assistant. Write original song lyrics based on the prompt.'
+          },
           { role: 'user', content: prompt }
         ],
         max_tokens: 400,
         temperature: 0.85,
       },
-      { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' } }
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      }
     );
-    res.json({ lyrics: response.data.choices[0].message.content });
+    const lyrics = response.data.choices[0].message.content;
+    res.json({ lyrics });
   } catch (err) {
-    console.error('Lyrics Error:', err.response?.data || err.message);
+    console.error('OpenAI Lyrics Error:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to generate lyrics.' });
   }
 });
 
-// --- AI Cover Art ---
+// --- AI Cover Art Generator Endpoint ---
 app.post('/generate-cover-art', async (req, res) => {
   const { prompt } = req.body;
-  if (!prompt) return res.status(400).json({ error: 'No prompt provided.' });
+  console.log('🟣 Cover Art Prompt Received:', prompt);
+
+  if (!prompt) {
+    return res.status(400).json({ error: 'No prompt provided for cover art.' });
+  }
+
+  const fullPrompt = `Album cover art, ${prompt}, no text`;
 
   try {
     const response = await axios.post(
       'https://api.openai.com/v1/images/generations',
-      { prompt: `Album cover art, ${prompt}, no text`, n: 1, size: '1024x1024' },
-      { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' } }
+      {
+        prompt: fullPrompt,
+        n: 1,
+        size: '1024x1024',
+        response_format: 'url',
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      }
     );
-    res.json({ imageUrl: response.data.data[0].url });
+    const imageUrl = response.data.data[0].url;
+    res.json({ imageUrl });
   } catch (err) {
-    console.error('Cover Art Error:', err.response?.data || err.message);
+    console.error('OpenAI Cover Art Error:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to generate cover art.' });
   }
 });
 
-// --- Analyze Song (Upload or URL) ---
+// --- AI Song Feedback (File Upload OR URL + R2 Storage + Analysis) ---
 app.post('/analyze-song', upload.single('file'), async (req, res) => {
   try {
-    let buffer, filename, mimeType, fileUrl;
+    let audioBuffer, originalName, mimeType, fileUrl;
 
     if (req.file) {
-      buffer = req.file.buffer;
-      filename = req.file.originalname;
+      // --- Case 1: File upload ---
+      originalName = req.file.originalname;
       mimeType = req.file.mimetype;
-      fileUrl = await uploadToR2(buffer, mimeType, filename);
+      audioBuffer = req.file.buffer;
+
+      // Save to R2
+      const key = `${Date.now()}-${originalName}`;
+      await r2.send(new PutObjectCommand({
+        Bucket: process.env.R2_BUCKET_NAME,
+        Key: key,
+        Body: audioBuffer,
+        ContentType: mimeType,
+      }));
+      fileUrl = `${process.env.R2_ENDPOINT}/${process.env.R2_BUCKET_NAME}/${encodeURIComponent(key)}`;
     } else if (req.body.url) {
-      const axiosRes = await axios.get(req.body.url, { responseType: 'arraybuffer' });
-      buffer = Buffer.from(axiosRes.data);
-      filename = req.body.url.split('/').pop();
-      mimeType = axiosRes.headers['content-type'] || 'audio/mpeg';
-      fileUrl = await uploadToR2(buffer, mimeType, filename);
+      // --- Case 2: File URL (Bubble → R2) ---
+      const response = await axios.get(req.body.url, { responseType: 'arraybuffer' });
+      audioBuffer = Buffer.from(response.data);
+      fileUrl = req.body.url;
+      originalName = fileUrl.split('/').pop();
+      mimeType = response.headers['content-type'] || 'audio/mpeg';
     } else {
       return res.status(400).json({ error: 'No file or URL provided.' });
     }
 
-    const transcript = await transcribeAudio(buffer, filename);
-    const feedback = await generateFeedback(transcript, filename, mimeType);
+    // --- Transcribe with Whisper ---
+    let transcript = '';
+    try {
+      const tempFilePath = `./uploads/${Date.now()}-${originalName}`;
+      fs.writeFileSync(tempFilePath, audioBuffer);
 
-    res.json({ fileUrl, transcript: transcript || null, feedback });
-  } catch (err) {
-    console.error('Analyze Song Error:', err.message);
+      const formData = new FormData();
+      formData.append('file', fs.createReadStream(tempFilePath));
+      formData.append('model', 'whisper-1');
+
+      const whisperRes = await axios.post(
+        'https://api.openai.com/v1/audio/transcriptions',
+        formData,
+        {
+          headers: {
+            ...formData.getHeaders(),
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          },
+        }
+      );
+      transcript = whisperRes.data.text;
+      fs.unlinkSync(tempFilePath);
+    } catch (e) {
+      console.error('Whisper error:', e.response?.data || e.message);
+    }
+
+    // --- Feedback prompt ---
+    let feedbackPrompt;
+    if (transcript && transcript.length > 5) {
+      feedbackPrompt = `You are an AI A&R specialist for a record label. Analyze this song's lyrics:\n\n${transcript}\n\nGive structured feedback including: genre, strengths, weaknesses, and suggestions. Be encouraging.`;
+    } else {
+      feedbackPrompt = `You are an AI A&R specialist for a record label. The system could not extract lyrics from this file: "${originalName}". Based on it being a ${mimeType} file, give general constructive feedback about possible strengths, weaknesses, and suggestions for the artist. Be supportive and helpful.`;
+    }
+
+    let feedback;
+    try {
+      const gptRes = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
+        {
+          model: 'gpt-3.5-turbo',
+          messages: [
+            { role: 'system', content: "You're an expert AI A&R music reviewer." },
+            { role: 'user', content: feedbackPrompt }
+          ],
+          max_tokens: 400,
+          temperature: 0.8,
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json',
+          }
+        }
+      );
+      feedback = gptRes.data.choices[0].message.content;
+    } catch (err) {
+      console.error('GPT analysis error:', err.response?.data || err.message);
+      feedback = 'Could not analyze audio in detail, but your file was received successfully!';
+    }
+
+    res.json({
+      fileUrl,
+      transcript: transcript || null,
+      feedback,
+    });
+
+  } catch (error) {
+    console.error('Song analysis error:', error.message);
     res.status(500).json({ error: 'Failed to analyze song.' });
   }
 });
 
+// --- AI Song Feedback (URL Upload + R2 Storage + Analysis) ---
+app.post('/analyze-song-url', async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) {
+      return res.status(400).json({ error: 'No file URL provided.' });
+    }
+
+    console.log("🟡 Received file URL from Bubble:", url);
+
+    // 1. Download file from the provided URL
+    const axiosRes = await axios.get(url, { responseType: 'arraybuffer' });
+    const buffer = Buffer.from(axiosRes.data);
+    const mimeType = axiosRes.headers['content-type'] || 'audio/mpeg';
+
+    // 2. Upload file to R2
+    const key = `${Date.now()}-bubble-upload.${mimeType.split('/')[1]}`;
+    await r2.send(new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET_NAME,
+      Key: key,
+      Body: buffer,
+      ContentType: mimeType,
+    }));
+    const fileUrl = `${process.env.R2_ENDPOINT}/${process.env.R2_BUCKET_NAME}/${encodeURIComponent(key)}`;
+
+    // 3. Save temp file for Whisper
+    const tempFilePath = `./uploads/${key}`;
+    fs.writeFileSync(tempFilePath, buffer);
+
+    // 4. Transcribe with Whisper
+    let transcript = '';
+    try {
+      const formData = new FormData();
+      formData.append('file', fs.createReadStream(tempFilePath));
+      formData.append('model', 'whisper-1');
+
+      const whisperRes = await axios.post(
+        'https://api.openai.com/v1/audio/transcriptions',
+        formData,
+        {
+          headers: {
+            ...formData.getHeaders(),
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          },
+        }
+      );
+      transcript = whisperRes.data.text;
+    } catch (e) {
+      console.error("Whisper error:", e.response?.data || e.message);
+    }
+    fs.unlinkSync(tempFilePath); // cleanup
+
+    // 5. Generate feedback with GPT
+    let feedbackPrompt;
+    if (transcript && transcript.length > 5) {
+      feedbackPrompt = `You are an AI A&R specialist for a record label. Analyze these lyrics:\n\n${transcript}\n\nProvide feedback: genre, strengths, weaknesses, suggestions. Be encouraging.`;
+    } else {
+      feedbackPrompt = `You are an AI A&R specialist. The system could not extract lyrics, but this is an audio file. Give constructive general feedback: genre, strengths, weaknesses, suggestions.`;
+    }
+
+    let feedback = '';
+    try {
+      const gptRes = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
+        {
+          model: 'gpt-3.5-turbo',
+          messages: [
+            { role: 'system', content: "You're an expert AI A&R music reviewer." },
+            { role: 'user', content: feedbackPrompt }
+          ],
+          max_tokens: 400,
+          temperature: 0.8,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json',
+          }
+        }
+      );
+      feedback = gptRes.data.choices[0].message.content;
+    } catch (err) {
+      console.error("GPT error:", err.response?.data || err.message);
+      feedback = "Could not analyze in detail, but your file was processed successfully!";
+    }
+
+    // 6. Send response back
+    res.json({ fileUrl, transcript: transcript || null, feedback });
+
+  } catch (err) {
+    console.error("Song analysis (URL) error:", err.message);
+    res.status(500).json({ error: 'Failed to analyze song from URL.' });
+  }
+});
+
+// --- Start Server ---
 app.listen(PORT, () => {
-  console.log(`🚀 OpenLabel AI Backend running on port ${PORT}`);
+  console.log(`✅ OpenLabel AI Backend running on port ${PORT}`);
 });
