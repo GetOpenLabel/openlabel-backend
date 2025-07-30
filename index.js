@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const multer = require('multer');
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
@@ -10,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 
 // --- Multer Setup for File Uploads ---
 const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
+const upload = multer({ storage: storage, limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB max
 
 if (!process.env.OPENAI_API_KEY) {
   console.error('❌ OPENAI_API_KEY is missing in .env!');
@@ -100,18 +101,76 @@ app.post('/generate-cover-art', async (req, res) => {
   }
 });
 
-// --- AI Song Feedback (File Upload) Endpoint ---
+// --- AI Song Feedback (File Upload + Real Analysis) ---
 app.post('/analyze-song', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded.' });
     }
 
-    // You would send req.file.buffer to your AI for analysis here.
-    // For now, this just simulates a feedback message.
-    res.json({
-      feedback: `✅ Received your song file "${req.file.originalname}". (This is where AI feedback will appear!)`
-    });
+    // --- 1. Transcribe the uploaded audio with OpenAI Whisper ---
+    // Write buffer to a temp file
+    const tempFilePath = `./uploads/${Date.now()}-${req.file.originalname}`;
+    fs.writeFileSync(tempFilePath, req.file.buffer);
+
+    let transcript = '';
+    try {
+      const formData = new FormData();
+      formData.append('file', fs.createReadStream(tempFilePath));
+      formData.append('model', 'whisper-1');
+      // Use axios POST with proper headers for multipart/form-data
+      const whisperRes = await axios.post(
+        'https://api.openai.com/v1/audio/transcriptions',
+        formData,
+        {
+          headers: {
+            ...formData.getHeaders(),
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          },
+        }
+      );
+      transcript = whisperRes.data.text;
+    } catch (e) {
+      // If Whisper fails, fallback to just file info
+      console.error('Whisper error:', e.response?.data || e.message);
+      transcript = '';
+    } finally {
+      fs.unlinkSync(tempFilePath); // Clean up file
+    }
+
+    // --- 2. If transcript available, send to GPT for feedback ---
+    let feedback = '';
+    if (transcript && transcript.length > 5) {
+      const prompt = `You are an AI A&R specialist for a record label. Listen to this song's lyrics and analyze its genre, strengths, weaknesses, and give technical feedback for the artist. Song lyrics transcription:\n\n${transcript}\n\nReturn your analysis in a friendly, constructive, and encouraging style.`;
+      try {
+        const gptRes = await axios.post(
+          'https://api.openai.com/v1/chat/completions',
+          {
+            model: 'gpt-3.5-turbo',
+            messages: [
+              { role: 'system', content: "You're an expert AI A&R music reviewer." },
+              { role: 'user', content: prompt }
+            ],
+            max_tokens: 300,
+            temperature: 0.8,
+          },
+          {
+            headers: {
+              'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+              'Content-Type': 'application/json',
+            }
+          }
+        );
+        feedback = gptRes.data.choices[0].message.content;
+      } catch (err) {
+        console.error('GPT analysis error:', err.response?.data || err.message);
+        feedback = 'Could not analyze lyrics, but file was received!';
+      }
+    } else {
+      feedback = `✅ Received your song file "${req.file.originalname}". (But could not transcribe audio.)`;
+    }
+
+    res.json({ feedback });
   } catch (error) {
     console.error('Song analysis error:', error.message);
     res.status(500).json({ error: 'Failed to analyze song.' });
