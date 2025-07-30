@@ -1,11 +1,16 @@
 const express = require('express');
 const axios = require('axios');
+const multer = require('multer');
 require('dotenv').config();
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
+
+// --- Multer Setup for File Uploads ---
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
 if (!process.env.OPENAI_API_KEY) {
   console.error('❌ OPENAI_API_KEY is missing in .env!');
@@ -92,6 +97,24 @@ app.post('/generate-cover-art', async (req, res) => {
   } catch (err) {
     console.error('OpenAI Cover Art Error:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to generate cover art.' });
+  }
+});
+
+// --- AI Song Feedback (File Upload) Endpoint ---
+app.post('/analyze-song', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded.' });
+    }
+
+    // You would send req.file.buffer to your AI for analysis here.
+    // For now, this just simulates a feedback message.
+    res.json({
+      feedback: `✅ Received your song file "${req.file.originalname}". (This is where AI feedback will appear!)`
+    });
+  } catch (error) {
+    console.error('Song analysis error:', error.message);
+    res.status(500).json({ error: 'Failed to analyze song.' });
   }
 });
 
