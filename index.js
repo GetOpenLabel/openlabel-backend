@@ -110,28 +110,42 @@ app.post('/generate-cover-art', async (req, res) => {
   }
 });
 
-// --- AI Song Feedback (File Upload + R2 Storage + Analysis) ---
+// --- AI Song Feedback (File Upload OR URL + R2 Storage + Analysis) ---
 app.post('/analyze-song', upload.single('file'), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded.' });
+    let audioBuffer, originalName, mimeType, fileUrl;
+
+    if (req.file) {
+      // --- Case 1: File upload ---
+      originalName = req.file.originalname;
+      mimeType = req.file.mimetype;
+      audioBuffer = req.file.buffer;
+
+      // Save to R2
+      const key = `${Date.now()}-${originalName}`;
+      await r2.send(new PutObjectCommand({
+        Bucket: process.env.R2_BUCKET_NAME,
+        Key: key,
+        Body: audioBuffer,
+        ContentType: mimeType,
+      }));
+      fileUrl = `${process.env.R2_ENDPOINT}/${process.env.R2_BUCKET_NAME}/${encodeURIComponent(key)}`;
+    } else if (req.body.url) {
+      // --- Case 2: File URL (Bubble → R2) ---
+      const response = await axios.get(req.body.url, { responseType: 'arraybuffer' });
+      audioBuffer = Buffer.from(response.data);
+      fileUrl = req.body.url;
+      originalName = fileUrl.split('/').pop();
+      mimeType = response.headers['content-type'] || 'audio/mpeg';
+    } else {
+      return res.status(400).json({ error: 'No file or URL provided.' });
     }
 
-    // --- 1. Save file to R2 ---
-    const key = `${Date.now()}-${req.file.originalname}`;
-    await r2.send(new PutObjectCommand({
-      Bucket: process.env.R2_BUCKET_NAME,
-      Key: key,
-      Body: req.file.buffer,
-      ContentType: req.file.mimetype,
-    }));
-    const fileUrl = `${process.env.R2_ENDPOINT}/${process.env.R2_BUCKET_NAME}/${encodeURIComponent(key)}`;
-
-    // --- 2. Try transcribing with Whisper ---
+    // --- Transcribe with Whisper ---
     let transcript = '';
     try {
-      const tempFilePath = `./uploads/${Date.now()}-${req.file.originalname}`;
-      fs.writeFileSync(tempFilePath, req.file.buffer);
+      const tempFilePath = `./uploads/${Date.now()}-${originalName}`;
+      fs.writeFileSync(tempFilePath, audioBuffer);
 
       const formData = new FormData();
       formData.append('file', fs.createReadStream(tempFilePath));
@@ -148,20 +162,20 @@ app.post('/analyze-song', upload.single('file'), async (req, res) => {
         }
       );
       transcript = whisperRes.data.text;
-      fs.unlinkSync(tempFilePath); // cleanup
+      fs.unlinkSync(tempFilePath);
     } catch (e) {
       console.error('Whisper error:', e.response?.data || e.message);
     }
 
-    // --- 3. Prepare GPT feedback ---
+    // --- Feedback prompt ---
     let feedbackPrompt;
     if (transcript && transcript.length > 5) {
       feedbackPrompt = `You are an AI A&R specialist for a record label. Analyze this song's lyrics:\n\n${transcript}\n\nGive structured feedback including: genre, strengths, weaknesses, and suggestions. Be encouraging.`;
     } else {
-      feedbackPrompt = `You are an AI A&R specialist for a record label. The system could not extract lyrics from this file: "${req.file.originalname}". Based on it being a ${req.file.mimetype} file, give general constructive feedback about possible strengths, weaknesses, and suggestions for the artist. Be supportive and helpful.`;
+      feedbackPrompt = `You are an AI A&R specialist for a record label. The system could not extract lyrics from this file: "${originalName}". Based on it being a ${mimeType} file, give general constructive feedback about possible strengths, weaknesses, and suggestions for the artist. Be supportive and helpful.`;
     }
 
-    let feedback = {};
+    let feedback;
     try {
       const gptRes = await axios.post(
         'https://api.openai.com/v1/chat/completions',
@@ -187,7 +201,6 @@ app.post('/analyze-song', upload.single('file'), async (req, res) => {
       feedback = 'Could not analyze audio in detail, but your file was received successfully!';
     }
 
-    // --- 4. Send structured response ---
     res.json({
       fileUrl,
       transcript: transcript || null,
