@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const multer = require('multer');
 const fs = require('fs');
+const FormData = require('form-data'); // needed for Whisper uploads
 require('dotenv').config();
 
 const app = express();
@@ -52,7 +53,7 @@ app.post('/generate-lyrics', async (req, res) => {
       },
       {
         headers: {
-          'Authorization': Bearer ${process.env.OPENAI_API_KEY},
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json',
         },
       }
@@ -75,7 +76,7 @@ app.post('/generate-cover-art', async (req, res) => {
   }
 
   // Optional: Add "Album cover art" context for better DALL-E results
-  const fullPrompt = Album cover art, ${prompt}, no text;
+  const fullPrompt = `Album cover art, ${prompt}, no text`;
 
   try {
     const response = await axios.post(
@@ -88,7 +89,7 @@ app.post('/generate-cover-art', async (req, res) => {
       },
       {
         headers: {
-          'Authorization': Bearer ${process.env.OPENAI_API_KEY},
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json',
         },
       }
@@ -110,7 +111,7 @@ app.post('/analyze-song', upload.single('file'), async (req, res) => {
 
     // --- 1. Transcribe the uploaded audio with OpenAI Whisper ---
     // Write buffer to a temp file
-    const tempFilePath = ./uploads/${Date.now()}-${req.file.originalname};
+    const tempFilePath = `./uploads/${Date.now()}-${req.file.originalname}`;
     fs.writeFileSync(tempFilePath, req.file.buffer);
 
     let transcript = '';
@@ -125,7 +126,7 @@ app.post('/analyze-song', upload.single('file'), async (req, res) => {
         {
           headers: {
             ...formData.getHeaders(),
-            'Authorization': Bearer ${process.env.OPENAI_API_KEY},
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
           },
         }
       );
@@ -141,7 +142,7 @@ app.post('/analyze-song', upload.single('file'), async (req, res) => {
     // --- 2. If transcript available, send to GPT for feedback ---
     let feedback = '';
     if (transcript && transcript.length > 5) {
-      const prompt = You are an AI A&R specialist for a record label. Listen to this song's lyrics and analyze its genre, strengths, weaknesses, and give technical feedback for the artist. Song lyrics transcription:\n\n${transcript}\n\nReturn your analysis in a friendly, constructive, and encouraging style.;
+      const prompt = `You are an AI A&R specialist for a record label. Listen to this song's lyrics and analyze its genre, strengths, weaknesses, and give technical feedback for the artist. Song lyrics transcription:\n\n${transcript}\n\nReturn your analysis in a friendly, constructive, and encouraging style.`;
       try {
         const gptRes = await axios.post(
           'https://api.openai.com/v1/chat/completions',
@@ -156,7 +157,7 @@ app.post('/analyze-song', upload.single('file'), async (req, res) => {
           },
           {
             headers: {
-              'Authorization': Bearer ${process.env.OPENAI_API_KEY},
+              'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
               'Content-Type': 'application/json',
             }
           }
@@ -167,7 +168,7 @@ app.post('/analyze-song', upload.single('file'), async (req, res) => {
         feedback = 'Could not analyze lyrics, but file was received!';
       }
     } else {
-      feedback = ✅ Received your song file "${req.file.originalname}". (But could not transcribe audio.);
+      feedback = `✅ Received your song file "${req.file.originalname}". (But could not transcribe audio.)`;
     }
 
     res.json({ feedback });
@@ -178,5 +179,5 @@ app.post('/analyze-song', upload.single('file'), async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(✅ OpenLabel AI Backend running on port ${PORT});
+  console.log(`✅ OpenLabel AI Backend running on port ${PORT}`);
 });
