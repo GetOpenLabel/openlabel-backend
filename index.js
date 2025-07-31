@@ -1,6 +1,5 @@
 const express = require('express');
 const axios = require('axios');
-const multer = require('multer');
 const fs = require('fs');
 const FormData = require('form-data');
 require('dotenv').config();
@@ -10,10 +9,6 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-
-// --- Multer Setup for File Uploads ---
-const storage = multer.memoryStorage();
-const upload = multer({ storage: storage, limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB max
 
 // --- R2 Setup ---
 const r2 = new S3Client({
@@ -110,111 +105,8 @@ app.post('/generate-cover-art', async (req, res) => {
   }
 });
 
-// --- AI Song Feedback (File Upload OR URL + R2 Storage + Analysis) ---
-app.post('/analyze-song', upload.single('file'), async (req, res) => {
-  try {
-    let audioBuffer, originalName, mimeType, fileUrl;
-
-    if (req.file) {
-      // --- Case 1: File upload ---
-      originalName = req.file.originalname;
-      mimeType = req.file.mimetype;
-      audioBuffer = req.file.buffer;
-
-      // Save to R2
-      const key = `${Date.now()}-${originalName}`;
-      await r2.send(new PutObjectCommand({
-        Bucket: process.env.R2_BUCKET_NAME,
-        Key: key,
-        Body: audioBuffer,
-        ContentType: mimeType,
-      }));
-      fileUrl = `${process.env.R2_ENDPOINT}/${process.env.R2_BUCKET_NAME}/${encodeURIComponent(key)}`;
-    } else if (req.body.url) {
-      // --- Case 2: File URL (Bubble → R2) ---
-      const response = await axios.get(req.body.url, { responseType: 'arraybuffer' });
-      audioBuffer = Buffer.from(response.data);
-      fileUrl = req.body.url;
-      originalName = fileUrl.split('/').pop();
-      mimeType = response.headers['content-type'] || 'audio/mpeg';
-    } else {
-      return res.status(400).json({ error: 'No file or URL provided.' });
-    }
-
-    // --- Transcribe with Whisper ---
-    let transcript = '';
-    try {
-      const tempFilePath = `./uploads/${Date.now()}-${originalName}`;
-      fs.writeFileSync(tempFilePath, audioBuffer);
-
-      const formData = new FormData();
-      formData.append('file', fs.createReadStream(tempFilePath));
-      formData.append('model', 'whisper-1');
-
-      const whisperRes = await axios.post(
-        'https://api.openai.com/v1/audio/transcriptions',
-        formData,
-        {
-          headers: {
-            ...formData.getHeaders(),
-            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-          },
-        }
-      );
-      transcript = whisperRes.data.text;
-      fs.unlinkSync(tempFilePath);
-    } catch (e) {
-      console.error('Whisper error:', e.response?.data || e.message);
-    }
-
-    // --- Feedback prompt ---
-    let feedbackPrompt;
-    if (transcript && transcript.length > 5) {
-      feedbackPrompt = `You are an AI A&R specialist for a record label. Analyze this song's lyrics:\n\n${transcript}\n\nGive structured feedback including: genre, strengths, weaknesses, and suggestions. Be encouraging.`;
-    } else {
-      feedbackPrompt = `You are an AI A&R specialist for a record label. The system could not extract lyrics from this file: "${originalName}". Based on it being a ${mimeType} file, give general constructive feedback about possible strengths, weaknesses, and suggestions for the artist. Be supportive and helpful.`;
-    }
-
-    let feedback;
-    try {
-      const gptRes = await axios.post(
-        'https://api.openai.com/v1/chat/completions',
-        {
-          model: 'gpt-3.5-turbo',
-          messages: [
-            { role: 'system', content: "You're an expert AI A&R music reviewer." },
-            { role: 'user', content: feedbackPrompt }
-          ],
-          max_tokens: 400,
-          temperature: 0.8,
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-            'Content-Type': 'application/json',
-          }
-        }
-      );
-      feedback = gptRes.data.choices[0].message.content;
-    } catch (err) {
-      console.error('GPT analysis error:', err.response?.data || err.message);
-      feedback = 'Could not analyze audio in detail, but your file was received successfully!';
-    }
-
-    res.json({
-      fileUrl,
-      transcript: transcript || null,
-      feedback,
-    });
-
-  } catch (error) {
-    console.error('Song analysis error:', error.message);
-    res.status(500).json({ error: 'Failed to analyze song.' });
-  }
-});
-
 // --- AI Song Feedback (URL Upload + R2 Storage + Analysis) ---
-app.post('/analyze-song-url', async (req, res) => {
+app.post('/analyze-song', async (req, res) => {
   try {
     const { url } = req.body;
     if (!url) {
@@ -223,7 +115,7 @@ app.post('/analyze-song-url', async (req, res) => {
 
     console.log("🟡 Received file URL from Bubble:", url);
 
-    // 1. Download file from the provided URL
+    // 1. Download file from provided URL
     const axiosRes = await axios.get(url, { responseType: 'arraybuffer' });
     const buffer = Buffer.from(axiosRes.data);
     const mimeType = axiosRes.headers['content-type'] || 'audio/mpeg';
@@ -303,8 +195,8 @@ app.post('/analyze-song-url', async (req, res) => {
     res.json({ fileUrl, transcript: transcript || null, feedback });
 
   } catch (err) {
-    console.error("Song analysis (URL) error:", err.message);
-    res.status(500).json({ error: 'Failed to analyze song from URL.' });
+    console.error("Song analysis error:", err.message);
+    res.status(500).json({ error: 'Failed to analyze song.' });
   }
 });
 
