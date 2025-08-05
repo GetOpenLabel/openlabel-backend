@@ -3,6 +3,7 @@ const express = require('express');
 const axios = require('axios');
 const multer = require('multer');
 const fs = require('fs');
+const path = require('path');
 const cors = require('cors');
 const FormData = require('form-data'); // needed for Whisper uploads
 require('dotenv').config();
@@ -113,8 +114,14 @@ app.post('/analyze-song', upload.single('file'), async (req, res) => {
       return res.status(400).json({ success: false, error: 'No file uploaded.' });
     }
 
-    // --- 1. Save buffer to temp file ---
-    const tempFilePath = `./uploads/${Date.now()}-${req.file.originalname}`;
+    // --- 1. Ensure uploads folder exists ---
+    const uploadsDir = path.join(__dirname, 'uploads');
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir);
+    }
+
+    // --- 2. Save buffer to temp file ---
+    const tempFilePath = path.join(uploadsDir, `${Date.now()}-${req.file.originalname}`);
     fs.writeFileSync(tempFilePath, req.file.buffer);
 
     let transcript = '';
@@ -141,7 +148,7 @@ app.post('/analyze-song', upload.single('file'), async (req, res) => {
       fs.unlinkSync(tempFilePath); // cleanup temp file
     }
 
-    // --- 2. Analyze transcript with GPT ---
+    // --- 3. Analyze transcript with GPT ---
     let feedback = '';
     if (transcript && transcript.length > 5) {
       const analysisPrompt = `You are an AI A&R specialist for a record label. 
